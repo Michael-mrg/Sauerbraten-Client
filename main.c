@@ -142,7 +142,7 @@ void parse_messages(packet *p, int cn)
 
 void disconnect()
 {
-    char data[] = "\x07\1";
+    char data[] = "\x07\0";
     data[1] = bot_client_num;
     send_packet(data, 3);
 

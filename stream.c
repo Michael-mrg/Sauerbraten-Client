@@ -1,3 +1,4 @@
+#include <stdlib.h>
 #include "stream.h"
 
 int read_char(packet *p)
@@ -22,7 +23,7 @@ int read_uint(packet *p)
     int n = read_char(p);
     for(int i = 7; i < 28; i += 7)
         if(n & (1 << i))
-            n += (read_char(p) << i) << (1 << i);
+            n += (read_char(p) << i) - (1 << i);
     if(n & (1 << 28))
         return n | 0xF0000000;
     return n;
@@ -43,6 +44,7 @@ void sub_buffer(packet *p, packet *p2, int length)
 {
     p2->data = p->data + p->offset;
     p->offset += length;
+    p2->offset = 0;
     p2->length = length;
 }
 
