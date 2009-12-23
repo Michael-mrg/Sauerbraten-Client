@@ -1,8 +1,4 @@
-typedef struct {
-    uint8_t *data;
-    int offset;
-    int length;
-} packet;
+#include "stream.h"
 
 int read_char(packet *p)
 {
@@ -34,6 +30,10 @@ int read_uint(packet *p)
 
 void read_string(packet *p, char *in)
 {
+    if(!in) {
+        while(read_char(p));
+        return;
+    }
     do
         *in = read_char(p);
     while(*in ++);
@@ -45,3 +45,4 @@ void sub_buffer(packet *p, packet *p2, int length)
     p->offset += length;
     p2->length = length;
 }
+
