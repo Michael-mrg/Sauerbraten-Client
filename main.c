@@ -1,4 +1,5 @@
 #include <stdio.h>
+#include <time.h>
 #include <string.h>
 #include <signal.h>
 #include <enet/enet.h>
@@ -7,6 +8,11 @@
 ENetPeer *peer;
 ENetHost *client;
 int bot_client_num;
+int file_num = 0;
+int stop_parsing = 0;
+const char *file_prefix;
+char *map_name;
+FILE *f = NULL;
 
 void send_packet(char *str, int len)
 {
@@ -14,129 +20,167 @@ void send_packet(char *str, int len)
     enet_peer_send(peer, 1, packet);
 }
 
+void next_file()
+{
+    char str[256];
+    sprintf(str, "%s%d_%s", file_prefix, file_num ++, map_name);
+    if(f)
+        fclose(f);
+
+    f = fopen(str, "w");
+    fwrite("SAUERBRATEN_DEMO", 1, 16, f);
+    int version[] = { 1, 257 };
+    fwrite(version, sizeof(int), 2, f);
+}
+
 void parse_messages(packet *p, int cn)
 {
-    int token = read_int(p);
-    switch(token) {
-        case 0x01: { // SV_SERVINFO
-            bot_client_num = read_int(p);
-            int protocol = read_int(p);
-            if(protocol != 257)
-                exit(-2);
-            int session_id = read_int(p);
-            int has_password = read_int(p);
+    while(p->offset < p->length) {
+        int token = read_int(p);
+        printf("%d/%d: %02x\n", p->offset, p->length, token);
+        switch(token) {
+            case 0x01: { // SV_SERVINFO
+                bot_client_num = read_int(p);
+                int protocol = read_int(p);
+                if(protocol != 257) {
+                    printf("Incompatible protocol: %d\n", protocol);
+                    stop_parsing = 1;
+                    return;
+                }
+                int session_id = read_int(p);
+                int has_password = read_int(p);
 
-            char *name = "[mVa]bot";
-            char data[32];
-            memset(data, '\0', 32);
-            strcat(data+1, name);
-            send_packet(data, 4 + strlen(name));
-            break;
-        }
-        case 0x02: { // SV_WELCOME
-            read_int(p);
-
-            char data[] = "\x37\0\1";
-            data[1] = bot_client_num;
-            send_packet(data, 4);
-            break;
-        }
-        case 0x11: { // SV_SPAWN
-            for(int i = 0; i < 12; i ++)
-                read_int(p);
-            break;
-        }
-        case 0x1c: { // SV_CLIENTPING
-            read_int(p);
-            break;
-        }
-        case 0x1d: { // SV_TIMEUP
-            int mins_left = read_int(p);
-            printf("Minutes left: %d\n", mins_left);
-            break;
-        }
-        case 0x22: { // SV_RESUME
-            while(1) {
-                int client_num = read_int(p);
-                if(client_num < 0) break;
-                for(int i = 0; i < 15; i ++)
-                    read_int(p);
+                char *name = "[mVa]bot";
+                char data[32];
+                memset(data, '\0', 32);
+                strcat(data+1, name);
+                send_packet(data, 4 + strlen(name));
+                break;
             }
-            break;
-        }
-        case 0x51: { // SV_CLIENT
-            int client_num = read_int(p);
-            int length = read_uint(p);
-            packet *p2 = malloc(sizeof(packet));
-            sub_buffer(p, p2, length);
-            parse_messages(p2, client_num);
-            free(p2);
-            break;
-        }
+            case 0x02: { // SV_WELCOME
+                read_int(p);
 
-        case 0x07: { // SV_CDIS
-            read_int(p);
-            break;
-        }
-        case 0x36: { // SV_CURRENTMASTER
-            for(int i = 0; i < 2; i ++)
+                char data[] = "\x37\0\1";
+                data[1] = bot_client_num;
+                send_packet(data, 4);
+                break;
+            }
+            case 0x11: { // SV_SPAWN
+                for(int i = 0; i < 12; i ++)
+                    read_int(p);
+                break;
+            }
+            case 0x15: { // SV_MAPCHANGE
+                memset(map_name, '\0', 64);
+                read_string(p, map_name);
                 read_int(p);
-            break;
-        }
+                read_int(p);
+                next_file();
+                break;
+            }
+            case 0x1c: { // SV_CLIENTPING
+                read_int(p);
+                break;
+            }
+            case 0x1d: { // SV_TIMEUP
+                int mins_left = read_int(p);
+                printf("Minutes left: %d\n", mins_left);
+                break;
+            }
+            case 0x22: { // SV_RESUME
+                while(1) {
+                    int client_num = read_int(p);
+                    if(client_num < 0) break;
+                    for(int i = 0; i < 15; i ++)
+                        read_int(p);
+                }
+                break;
+            }
+            case 0x51: { // SV_CLIENT
+                int client_num = read_int(p);
+                int length = read_uint(p);
+                packet *p2 = malloc(sizeof(packet));
+                sub_buffer(p, p2, length);
+                parse_messages(p2, client_num);
+                free(p2);
+                break;
+            }
 
-        case 0x06: { // SV_SOUND
-            read_int(p);
-            break;
-        }
-        case 0x0b: { // SV_DIED
-            for(int i = 0; i < 3; i ++)
+            case 0x07: { // SV_CDIS
                 read_int(p);
-            break;
-        }
-        case 0x0c: { // SV_DAMAGE
-            for(int i = 0; i < 5; i ++)
+                break;
+            }
+            case 0x36: { // SV_CURRENTMASTER
+                for(int i = 0; i < 2; i ++)
+                    read_int(p);
+                break;
+            }
+            case 0x39: { // SV_SETTEAM
                 read_int(p);
-            break;
-        }
-        case 0x0d: { // SV_HITPUSH
-            for(int i = 0; i < 6; i ++)
-                read_int(p);
-            break;
-        }
-        case 0x0e: { // SV_SHOTFX
-            for(int i = 0; i < 8; i ++)
-                read_int(p);
-            break;
-        }
+                char str[256];
+                read_string(p, str);
+            }
 
-        case 0x3d: { // SV_REPAMMO
-            for(int i = 0; i < 2; i ++)
+            case 0x06: { // SV_SOUND
                 read_int(p);
-            break;
-        }
-        
-        case 0x20: { // SV_SERVMSG
-            char str[256];
-            read_string(p, str);
-            printf("SERV: %s\n", str);
-            break;
-        }
+                break;
+            }
+            case 0x0b: { // SV_DIED
+                for(int i = 0; i < 3; i ++)
+                    read_int(p);
+                break;
+            }
+            case 0x0c: { // SV_DAMAGE
+                for(int i = 0; i < 5; i ++)
+                    read_int(p);
+                break;
+            }
+            case 0x0d: { // SV_HITPUSH
+                for(int i = 0; i < 6; i ++)
+                    read_int(p);
+                break;
+            }
+            case 0x0e: { // SV_SHOTFX
+                for(int i = 0; i < 8; i ++)
+                    read_int(p);
+                break;
+            }
 
-        case 0x59: { // SV_INITAI
-            for(int i = 0; i < 5; i ++)
-                read_int(p);
-            read_string(p, NULL);
-            read_string(p, NULL);
-            break;
-        }
+            case 0x05: { // SV_TEXT
+                char str[256];
+                read_string(p, str);
+                printf("Chat: %s\n", str);
+            }
 
-        default:
-            for(int i = 0; i < 8; i ++)
-                printf("%02x ", p->data[i]);
-            printf("\nFail (%d): %02x\n", p->offset, token);
-            if(0 && token == -1)
-                exit(-2);
-            break;
+            case 0x3d: { // SV_REPAMMO
+                for(int i = 0; i < 2; i ++)
+                    read_int(p);
+                break;
+            }
+            
+            case 0x20: { // SV_SERVMSG
+                char str[256];
+                read_string(p, str);
+                printf("SERV: %s\n", str);
+                break;
+            }
+
+            case 0x59: { // SV_INITAI
+                for(int i = 0; i < 5; i ++)
+                    read_int(p);
+                read_string(p, NULL);
+                read_string(p, NULL);
+                break;
+            }
+
+            default:
+                for(int i = 0; i < 8; i ++)
+                    printf("%02x ", p->data[i]);
+                printf("\nFail (%d): %02x\n", p->offset, token);
+                if(0 && token == -1)
+                    exit(-2);
+                break;
+        }
     }
 }
 
@@ -150,6 +194,9 @@ void disconnect()
     enet_host_flush(client);
     enet_peer_reset(peer);
     enet_host_destroy(client);
+
+    free(map_name);
+    fclose(f);
 }
 
 void disconnect_signal(int signum)
@@ -157,8 +204,10 @@ void disconnect_signal(int signum)
     exit(0);
 }
 
-int main()
+int main(int argc, const char *argv[])
 {
+    file_prefix = (argc == 1) ? "demo" : argv[1];
+
     if(enet_initialize())
         return -1;
 
@@ -178,11 +227,15 @@ int main()
     atexit(disconnect);
     atexit(enet_deinitialize);
 
+    map_name = malloc(64);
+    memset(map_name, '\0', 64);
+
+    clock_t start_time = clock();
     while(1) {
         if(enet_host_service(client, &event, 0) <= 0) continue;
         switch(event.type) {
             case ENET_EVENT_TYPE_RECEIVE:
-                if(event.channelID == 1) {
+                if(!stop_parsing && event.channelID == 1) {
                     packet *p = malloc(sizeof(packet));
                     p->offset = 0;
                     p->length = event.packet->dataLength;
@@ -191,7 +244,11 @@ int main()
                     free(p);
                 }
         
-                //int stamp[3] = { 0, event.channelID, event.packet->dataLength };
+                if(f) {
+                    int stamp[3] = { (clock() - start_time) / 1000.0, event.channelID, event.packet->dataLength };
+                    fwrite(stamp, sizeof(int), 3, f);
+                    fwrite(event.packet->data, event.packet->dataLength, 1, f);
+                }
                 break;
             default:
                 printf("Received event: %d.\n", event.type);
