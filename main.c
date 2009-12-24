@@ -2,8 +2,11 @@
 #include <time.h>
 #include <string.h>
 #include <signal.h>
+#include <zlib.h>
 #include <enet/enet.h>
 #include "stream.h"
+
+#define BUFFER_SIZE 64
 
 ENetPeer *peer;
 ENetHost *client;
@@ -12,7 +15,7 @@ int file_num = 0;
 int stop_parsing = 0;
 const char *file_prefix;
 char *map_name;
-FILE *f = NULL;
+gzFile f = NULL;
 
 void send_packet(char *str, int len)
 {
@@ -22,15 +25,16 @@ void send_packet(char *str, int len)
 
 void next_file()
 {
-    char str[256];
-    sprintf(str, "%s%d_%s", file_prefix, file_num ++, map_name);
     if(f)
-        fclose(f);
+        gzclose(f);
 
-    f = fopen(str, "w");
-    fwrite("SAUERBRATEN_DEMO", 1, 16, f);
+    char str[256];
+    memset(str, '\0', BUFFER_SIZE);
+    sprintf(str, "%s%d_%s.dmo", file_prefix, file_num ++, map_name);
+    f = gzopen(str, "w9");
+    gzwrite(f, "SAUERBRATEN_DEMO", 16);
     int version[] = { 1, 257 };
-    fwrite(version, sizeof(int), 2, f);
+    gzwrite(f, version, sizeof(int)*2);
 }
 
 void parse_messages(packet *p, int cn)
@@ -43,7 +47,7 @@ void parse_messages(packet *p, int cn)
                 bot_client_num = read_int(p);
                 int protocol = read_int(p);
                 if(protocol != 257) {
-                    printf("Incompatible protocol: %d\n", protocol);
+                    printf("Incompatible protocol: %d\nStopping parser.\n", protocol);
                     stop_parsing = 1;
                     return;
                 }
@@ -71,7 +75,7 @@ void parse_messages(packet *p, int cn)
                 break;
             }
             case 0x15: { // SV_MAPCHANGE
-                memset(map_name, '\0', 64);
+                memset(map_name, '\0', BUFFER_SIZE);
                 read_string(p, map_name);
                 read_int(p);
                 read_int(p);
@@ -195,8 +199,8 @@ void disconnect()
     enet_peer_reset(peer);
     enet_host_destroy(client);
 
+    gzclose(f);
     free(map_name);
-    fclose(f);
 }
 
 void disconnect_signal(int signum)
@@ -227,8 +231,8 @@ int main(int argc, const char *argv[])
     atexit(disconnect);
     atexit(enet_deinitialize);
 
-    map_name = malloc(64);
-    memset(map_name, '\0', 64);
+    map_name = malloc(BUFFER_SIZE);
+    memset(map_name, '\0', BUFFER_SIZE);
 
     clock_t start_time = clock();
     while(1) {
@@ -246,8 +250,8 @@ int main(int argc, const char *argv[])
         
                 if(f) {
                     int stamp[3] = { (clock() - start_time) / 1000.0, event.channelID, event.packet->dataLength };
-                    fwrite(stamp, sizeof(int), 3, f);
-                    fwrite(event.packet->data, event.packet->dataLength, 1, f);
+                    gzwrite(f, stamp, 3 * sizeof(int));
+                    gzwrite(f, event.packet->data, event.packet->dataLength);
                 }
                 break;
             default:
