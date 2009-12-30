@@ -1,21 +1,4 @@
-#include <stdio.h>
-#include <time.h>
-#include <string.h>
-#include <signal.h>
-#include <zlib.h>
-#include <enet/enet.h>
-#include "stream.h"
-
-#define BUFFER_SIZE 64
-
-ENetPeer *peer;
-ENetHost *client;
-int bot_client_num;
-int file_num = 0;
-int stop_parsing = 0;
-const char *file_prefix;
-char *map_name;
-gzFile f = NULL;
+#include "main.h"
 
 void send_packet(char *str, int len)
 {
@@ -23,21 +6,7 @@ void send_packet(char *str, int len)
     enet_peer_send(peer, 1, packet);
 }
 
-void next_file()
-{
-    if(f)
-        gzclose(f);
-
-    char str[256];
-    memset(str, '\0', BUFFER_SIZE);
-    sprintf(str, "%s%d_%s.dmo", file_prefix, file_num ++, map_name);
-    f = gzopen(str, "w9");
-    gzwrite(f, "SAUERBRATEN_DEMO", 16);
-    int version[] = { 1, 257 };
-    gzwrite(f, version, sizeof(int)*2);
-}
-
-void parse_messages(packet *p, int cn)
+int parse_messages(packet *p, int cn)
 {
     while(p->offset < p->length) {
         int token = read_int(p);
@@ -47,9 +16,11 @@ void parse_messages(packet *p, int cn)
                 bot_client_num = read_int(p);
                 int protocol = read_int(p);
                 if(protocol != 257) {
+                    for(int i = 0; i < 8; i ++)
+                        printf("%02x ", p->data[20+i]);
+                    printf("! %d\n", p->offset);
                     printf("Incompatible protocol: %d\nStopping parser.\n", protocol);
-                    stop_parsing = 1;
-                    return;
+                    return -1;
                 }
                 int session_id = read_int(p);
                 int has_password = read_int(p);
@@ -75,11 +46,19 @@ void parse_messages(packet *p, int cn)
                 break;
             }
             case 0x15: { // SV_MAPCHANGE
+                int first = map_name[0] == '\0';
+
                 memset(map_name, '\0', BUFFER_SIZE);
                 read_string(p, map_name);
                 read_int(p);
                 read_int(p);
-                next_file();
+                
+                if(!first) {
+                    const char *prefix = d->prefix;
+                    demo_close(d);
+                    d = demo_new(d->prefix);
+                }
+                demo_set_map_name(d, map_name);
                 break;
             }
             case 0x1c: { // SV_CLIENTPING
@@ -121,8 +100,7 @@ void parse_messages(packet *p, int cn)
             }
             case 0x39: { // SV_SETTEAM
                 read_int(p);
-                char str[256];
-                read_string(p, str);
+                read_string(p, NULL);
             }
 
             case 0x06: { // SV_SOUND
@@ -154,6 +132,11 @@ void parse_messages(packet *p, int cn)
                 char str[256];
                 read_string(p, str);
                 printf("Chat: %s\n", str);
+                if(!strcmp(str, "%say")) {
+                    char *data = "\x51\0\3\x05Hi";
+                    data[1] = bot_client_num;
+                    send_packet(data, strlen(data));
+                }
             }
 
             case 0x3d: { // SV_REPAMMO
@@ -181,11 +164,11 @@ void parse_messages(packet *p, int cn)
                 for(int i = 0; i < 8; i ++)
                     printf("%02x ", p->data[i]);
                 printf("\nFail (%d): %02x\n", p->offset, token);
-                if(0 && token == -1)
-                    exit(-2);
+                return -1;
                 break;
         }
     }
+    return 0;
 }
 
 void disconnect()
@@ -198,20 +181,22 @@ void disconnect()
     enet_host_flush(client);
     enet_peer_reset(peer);
     enet_host_destroy(client);
+}
 
-    gzclose(f);
+void safe_shutdown()
+{
+    disconnect();
+    demo_close(d);
     free(map_name);
 }
 
-void disconnect_signal(int signum)
+void shutdown_signal(int signum)
 {
     exit(0);
 }
 
 int main(int argc, const char *argv[])
 {
-    file_prefix = (argc == 1) ? "demo" : argv[1];
-
     if(enet_initialize())
         return -1;
 
@@ -227,33 +212,37 @@ int main(int argc, const char *argv[])
         return -1;
     }
 
-    signal(SIGINT, disconnect_signal);
-    atexit(disconnect);
+    signal(SIGINT, shutdown_signal);
     atexit(enet_deinitialize);
+    atexit(safe_shutdown);
 
     map_name = malloc(BUFFER_SIZE);
     memset(map_name, '\0', BUFFER_SIZE);
+    d = demo_new((argc == 1) ? "demo" : argv[1]);
 
     clock_t start_time = clock();
+    int parsing = 1;
     while(1) {
-        if(enet_host_service(client, &event, 0) <= 0) continue;
+        if(enet_host_service(client, &event, 0) <= 0)
+            continue;
         switch(event.type) {
-            case ENET_EVENT_TYPE_RECEIVE:
-                if(!stop_parsing && event.channelID == 1) {
+            case ENET_EVENT_TYPE_RECEIVE: {
+                demo_record_timestamp(d, start_time, event.channelID, event.packet->dataLength);
+                demo_record_packet(d, event.packet);
+
+                if(parsing && event.channelID == 1) {
                     packet *p = malloc(sizeof(packet));
                     p->offset = 0;
                     p->length = event.packet->dataLength;
                     p->data = event.packet->data;
-                    parse_messages(p, -1);
+                    if(parse_messages(p, -1)) {
+                        printf("Parser failed. :(\n");
+                        parsing = 0;
+                    }
                     free(p);
                 }
-        
-                if(f) {
-                    int stamp[3] = { (clock() - start_time) / 1000.0, event.channelID, event.packet->dataLength };
-                    gzwrite(f, stamp, 3 * sizeof(int));
-                    gzwrite(f, event.packet->data, event.packet->dataLength);
-                }
                 break;
+            }
             default:
                 printf("Received event: %d.\n", event.type);
                 break;
